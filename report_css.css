@@ -1,0 +1,119 @@
+@import url("https://fonts.googleapis.com/css?family=Montserrat|Playfair+Display&display=swap");
+
+/* Main text is monserrat*/
+  body {
+    font-family: "Montserrat", sans-serif;
+    font-size: 10pt;
+    color: #444;
+    padding-top: 60px;
+    padding-bottom: 40px;
+  }
+  h1 {
+    font-family: "Montserrat", sans-serif;
+    font-size: 16pt;
+    color: #444;
+  }
+  h2,h3,h4 {
+    font-family: "Montserrat", sans-serif;
+    font-size: 12pt;
+    color: #444;
+  }
+
+
+/*
+.footer {
+  position: absolute;
+  background: #689cfd;
+  bottom: 0;
+  width: 100%;
+  height: 50px;
+  margin-left:0in;
+  margin-right: 0in;
+}
+*/
+
+.footer {
+  position: relative;
+  margin-top: -150px; /* negative value of footer height */
+  background: #689cfd;
+  height: 150px;
+  clear:both;
+  padding-top:20px;
+}
+
+.fixed-footer{
+
+        width: 100%;
+        position: absolute;
+        background: #689cfd;
+        padding: 10px 0;
+        color: #fff;
+        bottom:0;
+    }
+
+/*.fixed-footer{
+        bottom: 0;
+    }
+*/
+
+ div.divFooter {
+    position: fixed;
+    bottom: 0;
+    background: #689cfd;
+  }
+}
+.ft-legal {
+    padding: 0.9375rem 1.875rem;
+    background-color: #333;
+}
+.ft-legal-list {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+}
+.ft-legal-list li {
+    margin: 0.125rem 0.625rem;
+    white-space: nowrap;
+}
+/* one before the last child */
+.ft-legal-list li:nth-last-child(2) {
+    flex: 1;       /* same as flex-grow: 1; */
+}
+
+
+
+:root {
+  --border-bottom-color: coral;
+  --fixed-footer-width: 12rem; /* Shrink sidebar width  */
+  --fixed-footer-background-color: #689cfd; /* Make sidebar blue */
+  /*--sidebar-horizontal-padding: 0.01in; /* Reduce sidebar padding */
+  --decorator-outer-dim: 10px; /* Make position deliniating circles larger */
+  --decorator-border: 2px solid #bdd7e7; /* Make timeline a blue as well*/
+}
+.footer {
+    display: block; text-align: center;
+    position: running(footer);
+    background: #689cfd;
+}
+@page frontmatter:first {
+  @top-left {
+    content: none;
+  }
+  @top-right {
+    content: none;
+  }
+  @bottom-right {
+    content: counter(page, lower-roman);
+  }
+    @bottom-right {
+    content: "REACH";
+  }
+}
+
+@page{
+  @top-left{
+    content: "My title";
+    padding-left: 15mm;
+    color: #FF5733;
+  }
+}

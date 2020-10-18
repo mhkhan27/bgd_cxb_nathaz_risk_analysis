@@ -1,0 +1,1444 @@
+---
+title: "Structure Exposure to Natural Hazards in Rohingya Camps"
+author: "Natural Hazard Technical Working Group"
+date: "`r Sys.Date()`"
+editor_options:
+  chunk_output_type: console
+output:
+  pagedown::html_paged:
+    # change to true for a self-contained document, but it'll be a litte slower for Pandoc to render
+    toc: true
+    self_contained: true
+    # css: [ "default-page", "default","report_css.css"]
+    # css: [ "test.css","default"]
+    css: [ "custom_default.css", "custom_default_not_page.css","test.css"]
+    # css: ["report_css.css", "default-page", "default"]
+    # footer: "Copyright (c) 2014, RStudio"
+# uncomment this line to produce HTML and PDF in RStudio:
+knit: pagedown::chrome_print
+links-to-footnotes: true
+---
+
+<!-- <div class="watermark">DRAFT</div> -->
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+<style type="text/css">
+.caption {
+    font-size: x-small;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+# knit: pagedown::chrome_print
+knitr::opts_chunk$set(echo = TRUE,warning = F)
+library(tidyverse)
+library(sf)
+library(gt)
+
+conflicted::conflict_prefer(name = "select",winner = "dplyr")
+conflicted::conflict_prefer(name = "filter",winner = "dplyr")
+source("scripts/utils.R")
+```
+
+
+
+
+
+
+```{r, results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+unhcr_pop_aug_2020<-readxl::read_xlsx("inputs/UNHCR Population Factsheet - Block Level data_20200831_v1.xlsx","Final",skip = 2)
+# unhcr_pop_march2019<-readxl::read_xlsx("../../../01_GIS_BASE_Data/03_population/05_unhcr/unhcr_rohingya_pop_stats_20200319.xlsx","Annex I-Block Level",skip = 2)
+camp_boundary<- st_read("inputs", "Camp_boundary")
+# fp_df<- st_read("../../../")
+
+# fp<- st_read("../../../01_GIS_BASE_Data/02_landscape/01_infrastructure/01_shelter_footprint/03_unosat_footprints","BGD_Camp_ShelterFootprint_UNOSAT_REACH_v1_07may2019", stringsAsFactors=F)
+
+
+# unhcr_pop<-unhcr_pop %>% janitor::clean_names()
+
+unhcr_pop<-unhcr_pop_aug_2020 %>%
+  janitor::clean_names() %>%
+  filter(!is.na(camp)& is.na(block)) %>%
+  mutate(
+    camp=str_replace(camp, "Total","") %>% trimws(),
+    total_families=as.numeric(total_families)
+  ) %>%
+  filter(camp!="Grand") %>%
+    select(camp, everything(), -starts_with("block")) %>% print(n=nrow(.))
+
+theshold_optim_res<-read_csv("inputs/20200928_shelter_threshold_optimization_results.csv")
+
+# all hazards
+# buff_1m<-data.table::fread("../../ShinyDashboardTemplates/nathaz_dashboard/nathaz_dashboard/data/shelter_1m_buffer_centroids_max_hazard.csv")
+buff_1m<-read_rds("inputs/shelters_by_hazard_fixed.rds")
+
+
+buff_1m<-buff_1m%>% mutate(camp_number=parse_number(cmp_name),
+                           region= case_when(camp_number %in% c(21:27)~ "Teknaf",
+                                             cmp_name== "Nayapara RC"~"Teknaf",
+                                             TRUE~ "Ukhiya")
+)
+
+
+fp<- read_rds(path = "inputs/fp_df.rds")
+fp_camp_summary<-fp %>% 
+  group_by(cmp_name) %>% 
+  summarise(
+    total_shelt_per_camp=n(),
+    total_shelt_area_per_camp=sum(area_m2)
+  ) %>% 
+  left_join(unhcr_pop, by= c("cmp_name"="camp"))
+
+# remove latrines
+buff_1m<-buff_1m %>% 
+  filter(area_m2>3.25)
+  
+
+buff_1m_split<-buff_1m %>%
+  split(.$hazard_code)
+
+buff_1m_split$haz_storm_surge_max %>% nrow()
+```
+
+
+```{r, results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+camp_pop_fp_area_relationship_plot<-fp_camp_summary %>%
+  ggplot(aes(x=total_shelt_area_per_camp,y=total_families))+
+  geom_point()+
+  scale_x_continuous(labels=scales::comma)+
+  scale_y_continuous(labels=scales::comma)+
+  xlab(expression(paste("Area of structure footprint (", m^2,")")))+
+  ylab("Reported families (UNHCR)")+
+  ggtitle("linear relationship between area of footprint and UNHCR reported families")+
+  theme_bw()+
+  theme(axis.text.y = element_text(angle = 90),
+        )
+
+
+fp_optimal_dataset<-fp %>% 
+  filter(area_m2>4, area_m2<112) %>% 
+  group_by(cmp_name) %>% 
+  summarise(
+    total_shelt_per_camp=n(),
+    total_shelt_area_per_camp=sum(area_m2)
+  ) %>% 
+  left_join(unhcr_pop, by= c("cmp_name"="camp"))
+
+
+# lm(formula = total_families~total_shelt_area_per_camp,data = fp_camp_summary) %>% summary()
+# lm(formula = total_families~total_shelt_per_camp,data = fp_camp_summary) %>% summary()
+# lm(formula = total_families~total_shelt_area_per_camp+total_shelt_per_camp,data = fp_camp_summary) %>% summary()
+
+theshold_optim_res_plot<-theshold_optim_res %>% 
+  mutate(thesh_alpha=ifelse(upper_thresh>100 & upper_thresh<=112,0.7,0.2)) %>% 
+  ggplot(aes(x=upper_thresh,y=adj_r2))+
+  geom_point(aes(
+    # alpha=scales::rescale(theshold_optim_res$adj_r2)
+    alpha=thesh_alpha
+    ), color="grey")+
+  geom_vline(xintercept = 112, lwd=1,color=rgb(238,88,89, maxColorValue = 255),linetype="dashed")+
+  geom_vline(xintercept = 100, lwd=1,color=rgb(238,88,89, maxColorValue = 255),linetype="dashed")+
+  xlab(expression(paste("Structure upper area threshold (", m^2,")")))+
+  ylab(expression(paste("adjusted ", r^2)))+
+  # labs(x=expression(paste("Structure upper area threshold (" m^2")")), y="adjusted R2")+
+  ggtitle("Structure size threshold optimization to fit population data")+
+  theme_bw()+
+  theme(
+    legend.position = "none"
+  )
+
+lm_eq <- function(df){
+
+    m <- lm(y ~ x, df);
+
+    eq <- substitute((y) == a + b %.% (x)*","~~(r)^2~"="~r2, 
+
+         list(a = format(unname(coef(m)[1]), digits = 2),
+
+              b = format(unname(coef(m)[2]), digits = 2),
+
+             r2 = format(summary(m)$r.squared, digits = 3)))
+
+    as.character(as.expression(eq));
+
+}
+
+# lm(formula =total_families~ total_shelt_area_per_camp, fp_optimal) %>% summary()
+optimal_fit_lm_plot<-fp_optimal_dataset %>% 
+  ggplot(aes(x=total_shelt_area_per_camp,y=total_families))+
+  geom_point()+
+  scale_x_continuous(labels= scales::comma)+
+  xlab(expression(paste("Shelter area per camp (",m^2,")")))+
+  geom_smooth(method="lm", formula = y~x)+
+  # geom_text(x=250000,y=1000,label=lm_eq(fp_optimal), parse=T)
+  ylab("Total # Families (UNHCR)")+
+  theme_bw()+
+  theme(axis.text.y = element_text(angle = 90)
+        )
+
+
+```
+
+
+
+
+```{r, results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+
+damage_palette<-c("#edf8e9","#fee8c8","#fdbb84", "#e34a33")
+ss_stucture_summary<-buff_1m_split$haz_storm_surge_max %>% 
+   filter(camp_number %in% 23:27) %>% 
+  mutate(value=ifelse(is.na(value),0,value)) %>%
+  summarise(
+    `No - Minimal Damage (< 0.1 m)` = sum(value>=0 &value<0.1,na.rm=T),
+    `Partial Damage (0.1-0.5 m)` = sum(value>=0.1 & value<0.5, na.rm=T),
+    `Full Damage (>= 0.5 m)` = sum(value>=0.5 , na.rm=T)
+    
+  ) %>%pivot_longer(everything(), names_to="Damage Category",values_to="# Structures") 
+ss_stucture_percent_summary<-buff_1m_split$haz_storm_surge_max %>% 
+   filter(camp_number %in% 23:27) %>% 
+  mutate(value=ifelse(is.na(value),0,value)) %>%
+  summarise(
+    `No - Minimal Damage (< 0.1 m)` =sum(value>=0 &value<0.1,na.rm=T)/nrow(.),
+    `Partial Damage (0.1-0.5 m)` = sum(value>=0.1 & value<0.5, na.rm=T)/nrow(.),
+  
+    `Full Damage (>= 0.5 m)` = sum(value>=0.5 , na.rm=T)/nrow(.)
+    
+  ) %>%pivot_longer(everything(), names_to="Damage Category",values_to="% Structures") 
+storm_surge_damage_stats<-left_join(ss_stucture_summary,ss_stucture_percent_summary)
+
+storm_surge_damage_stats<-storm_surge_damage_stats %>%
+  mutate(
+    damage_class=str_extract(`Damage Category`, "[^(]+") %>% trimws(),
+    damage_interval=str_extract(`Damage Category`,"[^()]+(?=\\)$)") %>% trimws(),
+    damage_label=fct_inorder(paste0(damage_class,"\n",damage_interval))
+  )
+storm_surge_damage_barplot<-storm_surge_damage_stats %>% ggplot(aes(x=damage_label,y=`# Structures`, fill=damage_label) )+
+  geom_bar(stat="identity",color="black")+
+  scale_fill_manual(values = damage_palette[2:4])+
+  scale_y_continuous(labels = scales::comma)+
+  ggtitle("# Structures by estimated damage from a comibined 10-Year ARI\nstorm surge and 10-year ARI precipitation event",subtitle = "Only storm surge affected camps (23-27 considered)")+
+  theme_bw()+coord_flip()+
+  theme(
+    axis.title.y=element_blank(),
+    # axis.text.y = element_text(angle=0),
+    legend.position = "none"
+  )
+
+
+storm_surge_damage_table<-storm_surge_damage_stats %>%
+  select(1:3) %>% gt()  %>% 
+  tab_header(title="Storm Surge Damage Estimates", subtitle = "Only Camps 23-27 Considered") %>% 
+  fmt_percent(
+    columns=vars(!!sym("% Structures")),
+    decimals=0
+  ) %>% 
+    tab_style(
+    style = cell_fill(color = "#fee8c8"),
+    locations = cells_body(
+    rows = 1)
+    ) %>% 
+    tab_style(
+    style = cell_fill(color = "#fdbb84"),
+    locations = cells_body(
+    rows = 2)
+    ) %>% 
+    tab_style(
+    style = cell_fill(color = "#e34a33"),
+    locations = cells_body(
+    rows = 3)
+    )  %>% 
+  tab_options(
+  table.font.size = px(14)            # Entire table'
+  )
+
+```
+
+```{r, results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+depths<-seq(0,2.5, by=0.01)
+storm_surge_threshold_summary<-buff_1m_split$haz_storm_surge_max %>%
+  # filter(camp_number %in% 23:27) %>% 
+  # mutate(value=ifelse(is.na(value),0,value)) %>%
+  filter(!is.na(value)) %>%
+  summarise(structures_affected=purrr::map(.x=depths,~sum(value>.,na.rm=T)) %>% unlist(),
+            depths= depths) %>% 
+  mutate(stucture_type="All Structures")
+
+storm_surge_shelter_summary<-buff_1m_split$haz_storm_surge_max %>% 
+  # mutate(value=ifelse(is.na(value),0,value)) %>%
+  # filter(camp_number %in% 23:27) %>% 
+  filter(!is.na(value)) %>% 
+  filter(area_m2>=4, area_m2<=100) %>% 
+  summarise(structures_affected=purrr::map(.x=depths,~sum(value>.,na.rm=T)) %>% unlist(),
+            depths= depths) %>% 
+  mutate(stucture_type="Shelters")
+
+storm_surge_threshold_summary<- bind_rows(storm_surge_threshold_summary,storm_surge_shelter_summary)
+
+flood_depth_rects <- data.frame(
+  xstart = c(0.01,0.5,1,2),
+  xend =   c(0.5, 1,  2,2.5),
+  col= forcats::as_factor( c("Low Depth","Moderate Depth","High Depth","Very High Depth")),
+  ymax= rep(max(storm_surge_threshold_summary$structures_affected),4)
+)
+
+storm_surge_depth_palette<-c("#93dcc8ff","#76b2d6ff", "#6d90bcff","#0d346dff")
+
+
+storm_surge_impact_plot<-ggplot()+
+  geom_path(data=storm_surge_threshold_summary, aes(x=depths,y=structures_affected, color=stucture_type ), size=2)+
+  geom_rect(data=flood_depth_rects,
+             mapping=aes(ymin=0,
+                         ymax=max(storm_surge_threshold_summary$structures_affected),
+                         xmin=xstart,
+                         xmax=xend, fill=col), alpha =0.5,show.legend = FALSE)+
+  scale_fill_manual(values = storm_surge_depth_palette)+
+  # scale_fill_brewer()+
+  scale_x_continuous(expand = c(0, 0), limits=c(0.01,2.5),
+                     breaks= c(0.01,0.5,1,1.5,2,2.5))+
+  scale_y_continuous(expand = c(0, 0), labels=scales::comma)+
+  #arrow to 0.5 m depth
+  annotate(
+    geom = "curve", x = 0.5, y = 12000 ,
+    xend = 0.5, yend = 9122 ,
+    curvature = .3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # structures at 0.5m
+  annotate(geom = "text", x = 0.5, y = 13000,
+           label = " ~ 9,100", hjust = "center")+
+  annotate(
+    geom = "curve", x = 0.25, y = 7000 ,
+    xend = 0.5, yend = 8079 ,
+    curvature = .3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  
+  annotate(geom = "text", x = 0.25, y = 7500,
+           label = " ~ 8,100", hjust = "center")+
+  # arrow to 1 m depth
+  annotate(
+    geom = "curve", x = 1.25, y = 7500 ,
+    xend = 1, yend = 3677,
+    curvature = -.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # structures at 1 m
+  annotate(geom = "text", x = 1.25, y = 7800,
+           label = "~ 3,700", hjust = "center")+
+  # structures at 2 m depth
+  annotate(
+    geom = "curve", x = 2.25, y = 4000 ,
+    xend = 2, yend = 866,
+    curvature = -.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  annotate(geom = "text", x = 2.25, y = 5000,
+           label = "~ 900", hjust = "center")+
+  
+  annotate(geom = "text", x = 0.35, y = 16000,
+           label = "Low \n Depth", hjust = "center")+
+  annotate(geom = "text", x = 0.75, y = 15500,
+           label = "Moderate Depth", hjust = "center")+
+  annotate(geom = "text", x = 1.5, y = 15500,
+           label = "High Depth", hjust = "center")+
+  annotate(geom = "text", x = 2.25, y = 16000,
+           label = "Very\nHigh Depth", hjust = "center")+
+  labs(x="water depth (m)", y="# of structures")+
+  ggtitle("Flood Hazard Exposure: 10-Year ARI Storm Surge + 10 Year ARI\nPrecipitation Event",subtitle = "Camps 23 - 27 considered")+
+  theme_bw()+
+  theme(axis.text.y = element_text(angle = 90),
+        legend.position = "top",
+        legend.title=element_blank(),
+        legend.direction="horizontal",
+        legend.justification="right",
+        legend.box = "horizontal",
+        legend.key = element_blank(),
+        # plot.title = element_text(hjust = 0.2),
+        # plot.subtitle = element_text(hjust = 0.2),
+        legend.box.margin = margin(-1,0,0,-2,"cm"),
+        # plot.margin = unit(c(0, 0, 0, 2), "cm")
+        )
+
+
+
+
+flood_depth_rects <- data.frame(
+  xstart = c(0.01,0.1,0.5),
+  xend =c(0.10,5,2.5),
+  col= forcats::as_factor( c("Minimal Damage","Partial Damage","Destruction")),
+  ymax= rep(max(storm_surge_threshold_summary$structures_affected),3)
+)
+
+# damage_palette<-c("#fee8c8","#fdbb84", "#e34a33")
+storm_surge_damage_plot<-ggplot()+
+  geom_path(data=storm_surge_threshold_summary, aes(x=depths,y=structures_affected, color=stucture_type ), size=2)+
+  geom_rect(data=flood_depth_rects,
+             mapping=aes(ymin=0,
+                         ymax=max(storm_surge_threshold_summary$structures_affected),
+                         xmin=xstart,
+                         xmax=2.5, fill=col), alpha =0.5,show.legend = FALSE)+
+  scale_fill_manual(values = damage_palette[2:4])+
+  # scale_fill_brewer()+
+  # scale_x_reverse(expand = c(0, 0))+
+  scale_x_continuous(expand = c(0, 0),limits = c(0.01,2.5),breaks = c(0.01,0.1,0.5,1,1.5,2,2.5))+
+  
+  scale_y_continuous(expand = c(0, 0), labels=scales::comma)+ 
+  ggpubr::geom_bracket(
+    xmin = 0.1, xmax = 0.5, y.position = 5000, 
+    label = "", tip.length=0
+  )+
+  ggpubr::geom_bracket(
+    xmin = 0.5, xmax = 2.5, y.position = 12500, label=paste0("Full Damage (>= 0.5 m)\n",
+                                                             round_any(ss_stucture_summary %>%
+                                                                         filter(str_detect(`Damage Category`,"^Full")) %>%
+                                                                         pull("# Structures")), " Structures")
+  )+
+
+  annotate(geom = "text", x = 0.4, y = 3000,
+           label = paste0("Partial Damage (0.1-0.5 m)\n",round_any(ss_stucture_summary %>% 
+           filter(str_detect(`Damage Category`,"^Partial")) %>% pull("# Structures")), " Structures"),
+           hjust="center")+
+  #arrow to 0.5 m depth
+  # annotate(
+  #   geom = "curve", x = 0.5, y = 12000 ,
+  #   xend = 0.5, yend = 9122 ,
+  #   curvature = .3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # # structures at 0.5m
+  # annotate(geom = "text", x = 0.5, y = 13000,
+  #          label = " ~ 9,100", hjust = "center")+
+  # annotate(
+  #   geom = "curve", x = 0.25, y = 7000 ,
+  #   xend = 0.5, yend = 8079 ,
+  #   curvature = .3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 
+  # annotate(geom = "text", x = 0.25, y = 7500,
+  #          label = " ~ 8,100", hjust = "center")+
+  # # arrow to 1 m depth
+  # annotate(
+  #   geom = "curve", x = 1.25, y = 7500 ,
+  #   xend = 1, yend = 3677,
+  #   curvature = -.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # # structures at 1 m
+  # annotate(geom = "text", x = 1.25, y = 7800,
+  #          label = "~ 3,700", hjust = "center")+
+  # # structures at 2 m depth
+  # annotate(
+  #   geom = "curve", x = 2.25, y = 4000 ,
+  #   xend = 2, yend = 866,
+  #   curvature = -.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # annotate(geom = "text", x = 2.25, y = 5000,
+  #          label = "~ 900", hjust = "center")+
+  # 
+  # annotate(geom = "text", x = 0.25, y = 5000,
+  #          label = "Partial Damage \n8,100 - 15,000 shelters", hjust = "center")+
+  # annotate(geom = "text", x = 1.75, y = 15500,
+  #          label = "Full Damage/Destruction\n<9,100 ", hjust = "center")+
+  labs(x="water depth (m)", y="# of structures")+
+  ggtitle("Flood Hazard Exposure: 10-Year ARI Storm Surge + 10 Year ARI\nPrecipitation Event",subtitle = "Camps 23 - 27 considered")+
+  theme_bw()+
+  theme(axis.text.y = element_text(angle = 90),
+        legend.position = "top",
+        legend.title=element_blank(),
+        legend.direction="horizontal",
+        legend.justification="right",
+        legend.box = "horizontal",
+        legend.key = element_blank(),
+        # plot.title = element_text(hjust = 0.2),
+        # plot.subtitle = element_text(hjust = 0.2),
+        legend.box.margin = margin(-1,0,0,-2,"cm"),
+        # plot.margin = unit(c(0, 0, 0, 2), "cm")
+        )
+
+```
+
+```{r, results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+
+
+pluvial_stucture_summary<-buff_1m_split$haz_pluvial_max %>% 
+  mutate(value=ifelse(is.na(value),0,value)) %>%
+  summarise(
+    `No - Minimal Damage (<0.1 m)` = sum(value>=0 &value<0.1,na.rm=T),
+    `Partial Damage (0.1-1 m)` = sum(value>=0.1 & value<1, na.rm=T),
+    `Full Damage (>= 1 m)` = sum(value>=1 , na.rm=T)
+    
+  ) %>%pivot_longer(everything(), names_to="Damage Category",values_to="# Structures") 
+pluvial_stucture_percent_summary<-buff_1m_split$haz_pluvial_max %>% 
+  mutate(value=ifelse(is.na(value),0,value)) %>%
+  summarise(
+    `No - Minimal Damage (<0.1 m)` =sum(value>=0 &value<0.1,na.rm=T)/nrow(.),
+    `Partial Damage (0.1-1 m)` = sum(value>=0.1 & value<1, na.rm=T)/nrow(.),
+  
+    `Full Damage (>= 1 m)` = sum(value>=1 , na.rm=T)/nrow(.)
+    
+  ) %>%pivot_longer(everything(), names_to="Damage Category",values_to="% Structures") 
+
+pluvial_damage_stats<-left_join(pluvial_stucture_summary,pluvial_stucture_percent_summary)
+
+pluvial_damage_stats<-pluvial_damage_stats %>%
+  mutate(
+    damage_class=str_extract(`Damage Category`, "[^(]+") %>% trimws(),
+    damage_interval=str_extract(`Damage Category`,"[^()]+(?=\\)$)") %>% trimws(),
+    damage_label=fct_inorder(paste0(damage_class,"\n",damage_interval))
+  )
+
+pluvial_damage_barplot<-pluvial_damage_stats %>% ggplot(aes(x=damage_label,y=`# Structures`, fill=damage_label) )+
+  geom_bar(stat="identity",color="black")+
+  scale_fill_manual(values = damage_palette[2:4])+
+  scale_y_continuous(labels = scales::comma)+
+  ggtitle("# Structures by estimated damage from modelled 10-Year ARI\npreicipitation event exposure",subtitle = "All 34 Camps Analyzed")+
+  theme_bw()+coord_flip()+
+  theme(
+    axis.title.y=element_blank(),
+    # axis.text.y = element_text(angle=0),
+    legend.position = "none"
+  )
+
+pluvial_damage_table<-pluvial_damage_stats%>%select(1:3) %>%  gt()  %>% 
+  tab_header(title="Pluvial Flooding Damage Estimates", subtitle = "All 34 camps considered") %>% 
+  fmt_percent(
+    columns=vars(!!sym("% Structures")),
+    decimals=0
+  ) %>% 
+    tab_style(
+    style = cell_fill(color = "#fee8c8"),
+    locations = cells_body(
+    rows = 1)
+    ) %>% 
+    tab_style(
+    style = cell_fill(color = "#fdbb84"),
+    locations = cells_body(
+    rows = 2)
+    ) %>% 
+    tab_style(
+    style = cell_fill(color = "#e34a33"),
+    locations = cells_body(
+    rows = 3)
+    )  
+```
+  
+  
+  
+
+
+```{r,  results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+depths<-seq(0,2, by=0.01)
+pluvial_10_year_max_thresholded<- buff_1m_split$haz_pluvial_max %>%
+  # mutate(value=ifelse(is.na(value),0,value)) %>% 
+  filter(!is.na(value)) %>%
+  summarise(structures_affected=purrr::map(.x=depths,~sum(value>.,na.rm=T)) %>% unlist(),
+            depths= depths) %>% 
+  mutate(structure_type="All Structures")
+
+
+pluvial_shelter_summary<-buff_1m_split$haz_pluvial_max %>% 
+  # mutate(value=ifelse(is.na(value),0,value)) %>%  # this is interesting as wella
+  filter(!is.na(value)) %>% 
+  filter(area_m2>=4, area_m2<=100) %>% 
+  summarise(structures_affected=purrr::map(.x=depths,~sum(value>.,na.rm=T)) %>% unlist(),
+            depths= depths) %>% 
+  mutate(structure_type="Shelters")
+
+flood_depth_rects <- data.frame(
+  xstart = c(0,0.5,1),
+  xend =c(0.5,1,2),
+  col= forcats::as_factor( c("Low Depth","Moderate Depth","High Depth")),
+  ymax= rep(max(storm_surge_threshold_summary$structures_affected),3)
+)
+
+
+pluvial_10_year_max_thresholded<- bind_rows(pluvial_10_year_max_thresholded,pluvial_shelter_summary)
+
+storm_surge_depth_palette<-c("#93dcc8ff","#76b2d6ff", "#6d90bcff","#0d346dff")
+
+threshold_table<- pluvial_10_year_max_thresholded %>% 
+  filter(depths %in% c(0.5,1,2)) %>% 
+  pivot_wider(names_from="structure_type", values_from="structures_affected") %>% 
+  janitor::clean_names()
+
+pluvial_flood_plot<-ggplot()+
+  geom_path(data=pluvial_10_year_max_thresholded, aes(x=depths,y=structures_affected, color=structure_type), size=2)+
+  geom_rect(data=flood_depth_rects,
+             mapping=aes(ymin=0,
+                         ymax=max(pluvial_10_year_max_thresholded$structures_affected),
+                         xmin=xstart,
+                         xmax=xend, fill=col), alpha =0.5, show.legend = F)+
+  scale_fill_manual(values = storm_surge_depth_palette)+
+  scale_x_continuous(expand = c(0, 0))+
+  scale_y_continuous(expand = c(0, 0), labels=scales::comma)+
+  #arrow to 0.5 m depth - all structures
+  annotate(
+    geom = "curve", x = 0.5, y = 30000 ,
+    xend = 0.5, yend = threshold_table$all_structures[1],
+    curvature = 0.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  #text 0.5 m depth -all structures
+  annotate(geom = "text", x = 0.5, y = 32200,
+           label = paste0("~ ",round_any(threshold_table$all_structures[1])) , hjust = "center")+
+  # arrow to 0.5 m depth -  shelters
+  annotate(
+    geom = "curve", x = 0.25, y = 17200 ,
+    xend = 0.5, yend = threshold_table$shelters[1],
+    curvature = -0.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # text to 0.5 m dept
+  annotate(geom = "text", x = 0.25, y = 16000,
+           label = paste0("~ ",round_any(threshold_table$shelters[1])) , hjust = "center")+
+  # 1m depth arrow structures
+  annotate(
+    geom = "curve", x = 1.25, y = 15000 ,
+    xend = 1, yend = threshold_table$all_structures[2],
+    curvature = .5, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 1m depth text structures
+  annotate(geom = "text", x = 1.25, y = 16000,
+           label = paste0("~ ",round_any(threshold_table$all_structures[2])), hjust = "center")+
+  # 1m depth arrow shelters
+  annotate(
+    geom = "curve", x = 0.75, y = 6000 ,
+    xend = 1, yend = threshold_table$shelters[2],
+    curvature = -.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 1m depth text shelters
+  annotate(geom = "text", x = 0.75, y = 5000,
+           label = paste0("~ ",round_any(threshold_table$shelters[2])), hjust = "center")+
+  
+  
+  annotate(geom = "text", x = 0.35, y = 40500,
+           label = "Low \n Depth", hjust = "center")+
+  annotate(geom = "text", x = 0.75, y = 40000,
+           label = "Moderate Depth", hjust = "center")+
+  annotate(geom = "text", x = 1.5, y = 40000,
+           label = "High Depth", hjust = "center")+
+  labs(x="water depth (m)", y="# of structures")+
+  ggtitle("Flood Hazard Exposure: from 10-Year ARI Precipitation Event",
+          subtitle = "All 34 Camps Analyzed")+
+  theme_bw()+
+  theme(axis.text.y = element_text(angle = 90),
+        legend.position = "top",
+        legend.title=element_blank(),
+        legend.direction="horizontal",
+        legend.justification="right",
+        legend.box = "horizontal",
+        legend.key = element_blank(),
+        # plot.title = element_text(hjust = 0.2),
+        # plot.subtitle = element_text(hjust = 0.2),
+        legend.box.margin = margin(-1,0,0,-2,"cm"),
+        # plot.margin = unit(c(0, 0, 0, 2), "cm")
+        )
+
+
+
+
+flood_depth_rects <- data.frame(
+  xstart = c(0.01,0.1,1),
+  xend =c(0.1,1,2),
+  col= forcats::as_factor( c("Minimal Damage","Partial Damage","Destruction")),
+  ymax= rep(max(storm_surge_threshold_summary$structures_affected),3)
+)
+
+damage_palette<-c("#edf8e9","#fee8c8","#fdbb84", "#e34a33")
+
+
+pluvial_flood_damage_plot<-ggplot()+
+  geom_path(data=pluvial_10_year_max_thresholded, aes(x=depths,y=structures_affected, color=structure_type), size=2)+
+  geom_rect(data=flood_depth_rects,
+             mapping=aes(ymin=0,
+                         ymax=max(pluvial_10_year_max_thresholded$structures_affected),
+                         xmin=xstart,
+                         xmax=xend, fill=col), alpha =0.5, show.legend = F)+
+  scale_fill_manual(values = damage_palette)+
+  scale_x_continuous(expand = c(0, 0), limits = c(0.01,2),breaks=c(0.01,0.1,0.5,1,1.5,2))+
+  scale_y_continuous(expand = c(0, 0), labels=scales::comma)+
+  # ggpubr::geom_bracket(
+  #   xmin = 0.1, xmax = 0.5, y.position =15000 , tip.length=0,
+  #   label=""
+  # )+
+  # annotate(geom = "text", x = 0.4, y = 10000,
+  #          label = paste0("Partial Damage (0.1 - 0.1 m)\n",round_any(pluvial_stucture_summary %>% 
+  #          filter(str_detect(`Damage Category`,"^Partial")) %>% pull("# Structures")), " Structures") , hjust = "center")+
+  
+    ggpubr::geom_bracket(
+    xmin = 0.1, xmax = 1, y.position = 30000, label=paste0("Partial Damage(0.1 - 1 m)\n",round_any(pluvial_stucture_summary %>% 
+           filter(str_detect(`Damage Category`,"^Partial")) %>% pull("# Structures")), " Structures")
+  )+
+  
+    ggpubr::geom_bracket(
+    xmin = 1, xmax = 2, y.position = 30000, label = paste0("Full Damage (>= 0.1 m)\n",round_any(pluvial_stucture_summary %>% 
+           filter(str_detect(`Damage Category`,"^Full")) %>% pull("# Structures")), " Structures")
+  )+
+    
+  #arrow to 0.5 m depth - all structures
+  # annotate(
+  #   geom = "curve", x = 0.5, y = 30000 ,
+  #   xend = 0.5, yend = threshold_table$all_structures[1],
+  #   curvature = 0.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # #text 0.5 m depth -all structures
+  # annotate(geom = "text", x = 0.5, y = 32200,
+           # label = paste0("~ ",round_any(threshold_table$all_structures[1])) , hjust = "center")+
+  # # arrow to 0.5 m depth -  shelters
+  # annotate(
+  #   geom = "curve", x = 0.25, y = 17200 ,
+  #   xend = 0.5, yend = threshold_table$shelters[1],
+  #   curvature = -0.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # # text to 0.5 m dept
+  # annotate(geom = "text", x = 0.25, y = 16000,
+  #          label = paste0("~ ",round_any(threshold_table$shelters[1])) , hjust = "center")+
+  # # 1m depth arrow structures
+  # annotate(
+  #   geom = "curve", x = 1.25, y = 15000 ,
+  #   xend = 1, yend = threshold_table$all_structures[2],
+  #   curvature = .5, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # # 1m depth text structures
+  # annotate(geom = "text", x = 1.25, y = 16000,
+  #          label = paste0("~ ",round_any(threshold_table$all_structures[2])), hjust = "center")+
+  # # 1m depth arrow shelters
+  # annotate(
+  #   geom = "curve", x = 0.75, y = 6000 ,
+  #   xend = 1, yend = threshold_table$shelters[2],
+  #   curvature = -.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # # 1m depth text shelters
+  # annotate(geom = "text", x = 0.75, y = 5000,
+  #          label = paste0("~ ",round_any(threshold_table$shelters[2])), hjust = "center")+
+  # 
+  # 
+  # annotate(geom = "text", x = 0.35, y = 40500,
+  #          label = "Low \n Depth", hjust = "center")+
+  # annotate(geom = "text", x = 0.75, y = 40000,
+  #          label = "Moderate Depth", hjust = "center")+
+  # annotate(geom = "text", x = 1.5, y = 40000,
+  #          label = "High Depth", hjust = "center")+
+  labs(x="water depth (m)", y="# of structures")+
+  ggtitle("Flood Hazard Exposure: from 10-Year ARI Precipitation Event",
+          subtitle = "All 34 Camps Analyzed")+
+  theme_bw()+
+  theme(axis.text.y = element_text(angle = 90),
+        legend.position = "top",
+        legend.title=element_blank(),
+        legend.direction="horizontal",
+        legend.justification="right",
+        legend.box = "horizontal",
+        legend.key = element_blank(),
+        # plot.title = element_text(hjust = 0.2),
+        # plot.subtitle = element_text(hjust = 0.2),
+        legend.box.margin = margin(-1,0,0,-2,"cm"),
+        # plot.margin = unit(c(0, 0, 0, 2), "cm")
+        )
+
+
+
+````
+
+
+Introduction
+=========================================================
+This preliminary analysis looks at structure exposure to natural hazards in the Rohingya refugee camps. All natural hazard data utilized in this analysis has been validated by the ISCG - IMAWG - Natural Hazard Technical Working group (NatHaz TWG). More information on the group and all published products are available on the [Humanitarian Response Repository.](https://www.humanitarianresponse.info/en/operations/bangladesh/infographic/coxs-bazar-natural-hazard-product-and-data-request-form)
+
+In 2019 and 2020 the TWG partners performed and commissioned a variety of  natural hazard analyses which include: flood hazard mapping(storm surge, precipitation), a wind assessment, and a landslide susceptibility model. 
+
+Essential Concepts
+---------------------------------------------------------
+It is critical to understand that this document does not attempt to evaluate risk. Thus far, work has only been undertaken to better understand the relevant hazards in the region. As you can see from the equation \@ref(eq:risk) below hazard is just one of three major components which comprise the definition of risk.
+
+\begin{equation}
+Risk = Hazard  \cdot  Exposure \cdot Vulnerability (\#eq:risk)
+\end{equation}
+
+The hazard component describes the natural or human-induced phenomena and understanding this component entails investigating the extent, probability, and intensity of the hazard itself within the area of study. Simply put, a hazard in an area with no population or infrastructure does not constitute a risk on it's own. So far, the primary natural hazards relevant to the context of the camps were systematically mapped out by the Natural Hazards TWG in 2019. <br><br>
+The exposure component describes the elements which may occur in the area prone to the hazard. This document aims to do a preliminary investigation to help understand exposure. Vulnerability, which describes the fragility and resilience of a population and or infrastructure is beyond the scope of this document and requires further consensus from emergency response actors.
+
+Additionally, it is important to understand the concept of **average recurrence interval (ARI)**. An average recurrence interval reflects the likelihood that an event will occur. A 10-year ARI precipitation event has a 10 % chance of being exceeded every year, while a 5-year ARI event would have a 20 % chance of being exceeded each year. It should be noted that if 9 consecutive years pass without a 10-year event, the chance of a 10-year ARI event occurring the next year is still 10 %. This can be conceptualized as analogous to a coin-toss. After 9 tosses, the chance of heads or tails on the 10th throw remains 50-50.   
+
+This concept is frequently used by engineers and planners to better understand various aspects of risk when deciding where and how to develop. As the refugee camps represent a complex network of engineering and development, it is highly relevant to the camp setting. All of the flood hazard work commissioned by the NatHaz TWG (storm surge and precipitation) were calculated based on several ARI scenarios. The flood exposure analysis in this document were based on the 10-year ARI storm surge and rain events. 
+
+
+Methodology
+=========================================================
+
+Input Data
+---------------------------------------------------------
+There are many methods that could be used to investigate exposure. For the purpose of this document we use the [UNOSAT-REACH 2019 Structure Footprint](https://data.humdata.org/dataset/bangladesh-refugee-camp-infrastructure-foot-print-january-2019) combined with UNHCR population data as a starting point. The footprint was developed from January 2019 NPM drone imagery and provides a high resolution and quantitative understanding of all the structures in the camps. While an updated footprint would be beneficial, the current file still correlates well with the [August 2020 UNCHR population figures](https://data2.unhcr.org/en/documents/details/78972).
+
+```{r pop1-plot,out.width='100%' , fig.align='center',fig.cap="Relationship between structure footprint area and unhcr population number. We see the two are linearly related with a good fit", echo =FALSE, warning=F}
+camp_pop_fp_area_relationship_plot
+
+```
+
+
+
+GIS Spatial Extraction
+--------------------------------------------------------
+
+
+As the UAV-derived photo-gammetric elevation model (NPM, 2019) was used as a primary input to all hazard models, artefacts in the topography represent a limitation of the hazard modeling work. A commonly occurring issue is that not all structures were fully removed from the topography. In these cases the rooftop elevation is erroneously assigned to the topography in the shelter location. This incorrect high elevation often causes structures to appear as not exposed to flood hazards. To help minimize the impact of this limitation, a 1 meter buffer was placed on all structures and the maximum hazard value of each hazard type was extracted to this buffer. This method helps to ensure that structures exposed to flooding would be considered even if the rooftops were not completely removed from the elevation model.
+
+Shelter Classification
+-------------------------------------------------------
+The values generated from this calculation provide exposure for all structures mapped. However, to better understand exposure of the population it may be desired to treat structures differently depending on there function (i.e shelters vs latrines). As shelters can be clearly linked to the UNHCR population family counting, a method is proposed to classify structures as shelters. As can be seen in Figure \@ref(fig:pop1-plot), the footprint area can be correlated to the UNHCR population data. However, based on contextual knowledge, we understand that once structure reaches a maximum or minimum size they are far more likely to be a public facility than a shelter.
+
+
+Therefore, to help determine thresholds for shelter size, the area thresholds were iteratively changed and the relationship between the footprint area and the UNHCR population was modeled for each iteration (Figure. \@ref(fig:optim1-plot)). A clear peak in model performance is seen when using a threshold of 100-115 m<sup>2</sup>. Since the model is based on area, tuning the lower threshold produced a smaller affect on the linear model result. The peak performance is seen with a lower threshold of 4 and upper of 112 m<sup>2</sup>. For the sake of simplicity, a lower threshold of 4 and upper threshold of 100 m<sup>2</sup> is used differentiate shelters from other structures. Therefore, all structures greater than or equal to 4 and less than or equal to 100 m<sup>2</sup> were removed prior to the analysis presented below.
+
+
+
+```{r optim1-plot,out.width='100%' , fig.align='center',fig.cap="Relationship between structure footprint area and unhcr population number. We see the two are linearly related with a good fit", echo =F}
+theshold_optim_res_plot
+
+```
+
+Flood Hazard
+=========================================================
+
+## Pluvial Flooding
+
+In 2019 under the Natural Hazard TWG, UNHCR, IOM, WFP, and REACH commissioned Arup and Deltares for flood hazard analysis work. WFP contracted Deltares to conduct a flood analysis for Kutupalong Balukhali Expansion sites (KTPBE), while IOM, UNHCR, and REACH commissioned Arup to perform the analysis for the camps located in Teknaf. Both simulations were based on the same input data and 1, 2, 5, and 10 year ARI precipitation events were used to simulate flooding. 
+
+The 10-year ARI event was used for this analysis:
+
+```{r pluv-plot, out.width='100%' , fig.align='left',fig.cap="Number of strutures & shelters impacted by each flood hazard depth interval from a 10-year ARI precipition event. The numbers written at each depth threshold indicate the number of structures/shelters that will be exposed to that depth or greater", echo =F}
+pluvial_flood_plot
+```
+
+
+<br><br>
+
+```{r pluvdam-plot, fig.align='left',fig.cap="Number of strutures by each flood hazard depth interval from a 10-year ARI precipition event", results='asis', echo = FALSE, warning = FALSE}
+pluvial_flood_damage_plot
+```
+
+
+```{r, results='asis', width=3.5,echo = FALSE, warning = FALSE}
+pluvial_damage_table %>% 
+  tab_options(table.font.size=px(12))
+```
+<br><br>
+```{r,pluvdambar-plot, fig.align='left',fig.cap="Number of strutures by damage estimate derived from  flood hazard depth expsure from a 10-year ARI precipition event", results='asis', echo = FALSE, warning = FALSE}
+pluvial_damage_barplot
+````
+
+Storm Surge
+------------------------------------------------
+
+In 2019/2020 IOM, UNHCR, and REACH commissioned Arup for a storm surge assessment. Based on previous work, it was determined that a tidal storm surge event would only have significant effect on those camps near the coast and or in proximity to the Naf river. Therefore camps 23-27 were considered for the coastal storm surge work. Arup simulated both 10 and 100 year storm surge events combined with 1, 2, 5, 10, and 100 year precipitation events. The two scenarios the NatHaz TWG decided to map and publish were the a.) [10 year cyclonic storm surge + 10 precipitation event](https://www.humanitarianresponse.info/sites/www.humanitarianresponse.info/files/documents/files/reach_bgd_map_nathaztf_flood_hazard_combined_10_year_ari_stormsurge_and_rain_event_may2020.pdf), and b.) [100 year cyclonic storm surge + 10 year precipitaion event](https://www.humanitarianresponse.info/sites/www.humanitarianresponse.info/files/documents/files/reach_bgd_map_nathaztf_flood_hazard_combined_100_year_stormsurge_and_10_year_rain_event_may2020.pdf).
+
+For the exposure analysis below, the 10 year cyclonic storm surge + 10 year precipitation scenario results were used.
+
+
+```{r, strormsurge-plot, out.width='100%' , fig.align='left',fig.cap="Number of strutures & shelters exposed to each flood depth interval from a combined 10-year ARI storm surge and 10 year-ARI precipition event. The numbers written at each depth threshold indicate the number of structures/shelters that will be exposed to that depth or greater. Only camps affected by storm surge are considered",results='asis', echo = FALSE, warning = FALSE}
+storm_surge_impact_plot
+```
+
+<br><br>
+
+
+```{r, stormsurgedamage-plot,out.width='100%' , fig.align='left',fig.cap= "Number & Percent of structures exposed to each flood depth interval from  a combined 10-year ARI storm surge and 10 year ARI precipitaiton event", results='asis', echo = FALSE, warning = FALSE}
+
+storm_surge_damage_plot
+  
+```
+
+
+```{r, width="75%", echo=F}
+storm_surge_damage_table %>% 
+  tab_options(table.font.size=px(12))
+````
+
+```{r, echo=F}
+storm_surge_damage_barplot
+```
+
+Wind Hazard
+=====================================================
+Shelter & SNFI Assessment of Structural Capacities
+----------------------------------------------------
+In 2018 the CXB Shelter and NFI Sector worked with Arup to conduct structural assessments of shelter capacities to wind loading. The aim of the [report](https://www.arup.com/-/media/arup/files/pdf-downloads/rohingya-refugee-reports/180827tgn0201-shelter-assessment-guidance-note.pdf) was, **"to
+provide an approximate range of strengths for different upgraded shelter types, in order to inform the Shelter and NFI Sector how vulnerable the different shelter"**
+
+Below are the conclusions drawn and position reported from Arups Assessment:
+
+"In line with thorough discussions at the level of the Shelter/NFI TWiG that were based on the
+Shelter/NFI Sector Survey findings conducted in July and August 2018 as well as the approved design
+parameters and designs of Transitional Shelters and Mid Term Shelters, the Shelter/NFI Sector
+assumes the below:
+
+- TYPE 1 shelter option assessed by Arup is comparable to existing shelters constructed using
+an upgrade shelter kit (**USK**) in addition to other shelter materials provided earlier and/or
+purchased by households.
+-  TYPE 2 shelter option assessed by Arup is comparable to the above mention existing shelter
+option + tie down kit (**TDK**).
+-  TYPE 4, 5 and, 6 shelter options assessed by Arup includes features found in the Shelter/NFI
+Sector’s phase three shelter options: Transitional Shelters (**TS**) and Mid-Term Shelters (**MTS**)
+inclusive of a TDK.
+The indicative wind resistance of the Sector’s shelter options is illustrated below. It is important to
+note that none of the shelter options are cyclone resistant. The Arup report provides sufficient insight
+on assumptions and limitations taken into account while carrying out the assessment." 
+
+```{r, out.width='100%' , fig.align='center',fig.cap="Indicative wind resistance of Shelter/NFI Sector’s shelter options (from Shelter/NFI report)", echo =F}
+
+knitr::include_graphics("inputs/arup_shelter_wind_capacities_graph.JPG")
+
+```
+
+UNDP Wind Hazard Assessment
+----------------------------------------------------
+In 2019 UNDP commissioned the consulting firm Sanders and Partners (S&P) for a wind assessment. The scenarios modeled were based on three historical hazardous wind scenarios: a.) a category I cyclone winds (Saffir-Sampson Scale) (November, 1995),  b.) monsoon wind conditions (June, 2011), and c.) pre-monsoon wind conditions, Kalbaishakhi - Nor’ Wetern (March 1995). The criteria used to select these three scenarios warrants further investigation. The assessment was only carried out for the camps located in KTPBE.
+
+The results of the S&P assessment were brought to the Natural Hazards TWG. It was decided that the most appropriate way to share and display the results was to produce a map of each scenario showing the highest wind velocity calculated throughout the duration of each event. The resulting map is [published online](https://www.humanitarianresponse.info/sites/www.humanitarianresponse.info/files/documents/files/reach_bgd_map_wind_hazard_nathaz_tf_april2020pdf.pdf).
+
+To investigate shelter exposure below we have just considered the results from the cyclonic wind hazard simulation. The wind velocities were simulated based on the category 1 cyclone that made land fall and passed through the study area on 25 November 1995. The wind  velocity results were obtained at an hourly time-step from 0300-1200.  The maximum wind-speed at each pixel was extracted from all of the hourly results.
+
+
+
+```{r,  results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+#make table
+
+cyclone_damage_summary<-buff_1m_split$haz_wind_max %>% 
+  # mutate(value=ifelse(is.na(value),0,value)) %>%
+  filter(!is.na(value)) %>% 
+  summarise(
+    `No - Minimal Damage (< 40 km/hr)` = sum(value>=0 &value<40,na.rm=T),
+    `Partial Damage (40 - 60 km/hr)`= sum(value>=40 & value<60, na.rm=T),
+    `Full Damage (>= 60 km/hr)` = sum(value>=60 , na.rm=T)
+    
+  ) %>%pivot_longer(everything(), names_to="Damage Category",values_to="# Structures") 
+cyclone_damage_percent_summary<-buff_1m_split$haz_wind_max %>% 
+  # mutate(value=ifelse(is.na(value),0,value)) %>%
+    filter(!is.na(value)) %>% 
+  summarise(
+    `No - Minimal Damage (< 40 km/hr)` =sum(value>=0 &value<40,na.rm=T)/nrow(.),
+    `Partial Damage (40 - 60 km/hr)` = sum(value>=40 & value<60, na.rm=T)/nrow(.),
+  
+    `Full Damage (>= 60 km/hr)`= sum(value>=60 , na.rm=T)/nrow(.)
+    
+  ) %>%pivot_longer(everything(), names_to="Damage Category",values_to="% Structures") 
+cyclone_damage_stats<-left_join(cyclone_damage_summary,cyclone_damage_percent_summary)
+cyclone_damage_table<-cyclone_damage_stats %>% gt()  %>% 
+  tab_header(title="Category 1 Cyclone - Wind Damage Estimates", subtitle = "Only KTPBE considered") %>% 
+  fmt_percent(
+    columns=vars(!!sym("% Structures")),
+    decimals=0
+  ) %>% 
+    tab_style(
+    style = cell_fill(color = "#fee8c8"),
+    locations = cells_body(
+    rows = 1)
+    ) %>% 
+    tab_style(
+    style = cell_fill(color = "#fdbb84"),
+    locations = cells_body(
+    rows = 2)
+    ) %>% 
+    tab_style(
+    style = cell_fill(color = "#e34a33"),
+    locations = cells_body(
+    rows = 3)
+    )  
+cyclone_damage_stats<-cyclone_damage_stats %>%
+  mutate(
+    damage_class=str_extract(`Damage Category`, "[^(]+") %>% trimws(),
+    damage_interval=str_extract(`Damage Category`,"[^()]+(?=\\)$)") %>% trimws(),
+    damage_label=fct_inorder(paste0(damage_class,"\n",damage_interval))
+  )
+
+cyclone_damage_barplot<-cyclone_damage_stats %>% ggplot(aes(x=damage_label,y=`# Structures`, fill=damage_label) )+
+  geom_bar(stat="identity",color="black")+
+  scale_fill_manual(values = damage_palette[2:4])+
+  scale_y_continuous(labels = scales::comma)+
+  ggtitle("# Structures by estimated damage derived from wind speed exposure",subtitle = "Simulated Category - 1 Cyclone, November 1995")+
+  theme_bw()+coord_flip()+
+  theme(
+    axis.title.y=element_blank(),
+    # axis.text.y = element_text(angle=0),
+    legend.position = "none"
+  )
+```
+
+
+```{r,  results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+
+wind_speeds<- seq(25,150,1)
+
+
+
+wind_speed_thresholded<-buff_1m_split$haz_wind_max %>%
+  filter(!is.na(value)) %>%
+  summarise(structures_affected=purrr::map(.x=wind_speeds,~sum(value>.,na.rm=T)) %>% unlist(),
+            wind_speeds= wind_speeds) %>% 
+  mutate(structure_type="All Structures")
+
+
+wind_speed_thresholded_summary<-buff_1m_split$haz_wind_max %>% 
+  filter(!is.na(value)) %>% 
+  filter(area_m2>=4, area_m2<=100) %>% 
+  summarise(structures_affected=purrr::map(.x=wind_speeds,~sum(value>.,na.rm=T)) %>% unlist(),
+            wind_speeds= wind_speeds) %>% 
+  mutate(structure_type="Shelters")
+
+wind_speed_thresholded<- bind_rows(wind_speed_thresholded,wind_speed_thresholded_summary)
+
+wind_speed_rects <- data.frame(
+  xstart = c(25,35,40,50,80),
+  xend =c(35,40,50,80,150),
+  col= forcats::as_factor( c("Type 1","Type 2","Transitional Shelters","Mid-Term Transitional Shelters","No Shelters")),
+  ymax= rep(max(wind_speed_thresholded$structures_affected),5)
+)
+
+# storm_surge_depth_palette<-c("#93dcc8ff","#76b2d6ff", "#6d90bcff","#0d346dff")
+threshold_table<- wind_speed_thresholded %>% 
+  filter(wind_speeds %in% c(35,40,50,80)) %>% 
+  pivot_wider(names_from="structure_type", values_from="structures_affected") %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    all_structure_labs=paste0("~ ", round_any(all_structures)),
+    shelter_labs=paste0("~ ", round_any(shelters))
+         )
+
+cyclone_wind_plot<-ggplot()+
+  geom_path(data=wind_speed_thresholded, aes(x=wind_speeds,y=structures_affected, color=structure_type), size=2)+
+  geom_rect(data=wind_speed_rects,
+             mapping=aes(ymin=25,
+                         ymax=max(wind_speed_thresholded$structures_affected),
+                         xmin=xstart,
+                         xmax=xend, fill=col), alpha =0.5, show.legend = F)+
+  scale_fill_brewer()+
+  # scale_fill_manual(values = storm_surge_depth_palette)+
+  scale_x_continuous(expand = c(0, 0))+
+  scale_y_continuous(expand = c(0, 0), labels=scales::comma)+
+  # 1a 35 km - all structures - arrow
+  annotate(
+    geom = "curve", x = 45, y = 125000 ,
+    xend = 35, yend = threshold_table$all_structures[1],
+    curvature = 0.2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 1b 35 km - all structures - text
+  annotate(geom = "text", x = 45, y = 125000,
+           label = threshold_table$all_structure_labs[1], hjust = "left")+
+  # 1c 35 km - shelters - arrow
+  annotate(
+    geom = "curve", x = 30, y = 100000 ,
+    xend = 35, yend = threshold_table$shelters[1],
+    curvature = 0.2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 1d 35 km - shelters - text
+  annotate(geom = "text", x = 27, y = 99000,
+           label = threshold_table$shelter_labs[1], hjust = "left")+
+  # 2a 40 km - structure - arrow
+  annotate(
+    geom = "curve", x = 55, y = 114000 ,
+    xend = 40, yend =   threshold_table$all_structures[2],
+    curvature = .2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 2b 40 km - structure text
+  annotate(geom = "text", x = 55, y = 115000,
+           label =  threshold_table$all_structure_labs[2],, hjust = "left")+
+  # 2c 40 km - shelter - arrow
+  annotate(
+    geom = "curve", x = 40, y = 92000 ,
+    xend = 40, yend = threshold_table$shelters[2],
+    curvature = 0.2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 2d 40 km - shelter - text
+  annotate(geom = "text", x = 40, y = 89000,
+           label = threshold_table$shelter_labs[2], hjust = "center")+
+  
+  # 3a 50 km arrow
+  annotate(
+    geom = "curve", x = 65, y = 93000 ,
+    xend = 50, yend = threshold_table$all_structures[3],
+    curvature = .2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 3b 50 km text
+  annotate(geom = "text", x = 67, y = 93000,
+           label =  threshold_table$all_structure_labs[3],, hjust = "left")+
+  # 3c 50 km shelter arrow
+  annotate(
+    geom = "curve", x = 45, y = 50000 ,
+    xend = 50, yend = threshold_table$shelters[3],
+    curvature = -.2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 3d 50 km  shelter text
+  annotate(geom = "text", x = 45, y = 45000,
+          label =  threshold_table$shelter_labs[3], hjust = "center")+
+
+  
+    #80 km curve
+  annotate(
+    geom = "curve", x = 82, y = 50000 ,
+    xend = 80, yend =   threshold_table$all_structures[4],
+    #text
+    curvature = .2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  annotate(geom = "text", x = 82, y = 50000,
+           label =  threshold_table$all_structure_labs[4], hjust = "left")+
+  
+  annotate(geom="text", x= 35, y=1000,label="USK",angle=90,hjust="left")+
+  annotate(geom="text", x= 40, y=1000,label="USK + TDK",angle=90,hjust="left")+
+  annotate(geom="text", x= 50, y=1000,label="TS",angle=90,hjust="left")+
+  annotate(geom="text", x= 80, y=1000,label="MTS",angle=90,hjust="left")+
+
+  ggtitle("# Structures Exposed to Wind Speeds Simulated from 1995 Cat 1 Cyclone",
+          subtitle = "Only KTPBE Analyzed")+
+  labs(x="wind speeds (km/hr",y="# Structured Exposed")+
+  theme_bw()+
+  theme(axis.text.y = element_text(angle = 90),
+        legend.position = "top",
+        legend.title=element_blank(),
+        legend.direction="horizontal",
+        legend.justification="right",
+        legend.box = "horizontal",
+        legend.key = element_blank(),
+        # plot.title = element_text(hjust = 0.2),
+        # plot.subtitle = element_text(hjust = 0.2),
+        legend.box.margin = margin(-1,0,0,-2,"cm"),
+        # plot.margin = unit(c(0, 0, 0, 2), "cm")
+        )
+
+```
+
+```{r, windnum-plot, out.width='100%' , fig.align='left',fig.cap="Number of strutures & shelters exposed to each wind speed interval from the modelled November 1995 category-1 cyclone. The numbers written at each wind speed threshold indicate the number of structures/shelters that will be exposed to that speed or greater. Only structures in KTPBE were considered.", echo =F}
+cyclone_wind_plot
+```
+
+```{r,  results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+total_structures_ukhiya<-buff_1m_split$haz_wind_max %>% filter(region=="Ukhiya") %>% nrow()
+
+
+
+wind_speed_thresholded<-buff_1m_split$haz_wind_max %>%
+  summarise(structures_affected=purrr::map(.x=wind_speeds,~sum(value>.,na.rm=T)/total_structures_ukhiya) %>%
+              unlist(),
+            wind_speeds= wind_speeds) %>% 
+  mutate(structure_type="All Structures")
+
+wind_speed_thresholded_shelters<-buff_1m_split$haz_wind_max %>%
+  filter(area_m2>=4, area_m2<=100) %>% 
+  summarise(structures_affected=purrr::map(.x=wind_speeds,~sum(value>.,na.rm=T)/total_structures_ukhiya) %>%
+              unlist(),
+            wind_speeds= wind_speeds) %>% 
+  mutate(structure_type="Shelters")
+
+
+wind_speed_thresholded <- bind_rows(wind_speed_thresholded,wind_speed_thresholded_shelters)
+
+threshold_table<- wind_speed_thresholded %>% 
+  filter(wind_speeds %in% c(35,40,50,80)) %>% 
+  pivot_wider(names_from="structure_type", values_from="structures_affected") %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    all_structure_labs=paste0("~ ", round_any(all_structures,accuracy = 0.01)*100,"%"),
+    shelter_labs=paste0("~ ", round_any(shelters,accuracy = 0.01)*100, "%")
+         )
+
+
+cyclone_wind_percent_plot<-ggplot()+
+  geom_path(data=wind_speed_thresholded, aes(x=wind_speeds,y=structures_affected,color=structure_type), size=2)+
+  geom_rect(data=wind_speed_rects,
+             mapping=aes(ymin=0,
+                         ymax=1,
+                         xmin=xstart,
+                         xmax=xend, fill=col), alpha =0.5, show.legend = F)+
+  scale_fill_brewer()+
+  # scale_fill_manual(values = storm_surge_depth_palette)+
+  scale_x_continuous(expand = c(0, 0),breaks = seq(0,150,10),minor_breaks = seq(0,150,5))+
+  scale_y_continuous(expand = c(0, 0), labels=scales::percent)+
+  
+  #1a arrow to 35 km
+  annotate(
+    geom = "curve", x = 40, y = 0.95 ,
+    xend = threshold_table$wind_speeds[1], yend = threshold_table$all_structures[1],
+    curvature = 0.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  #1b 35 km structures
+  annotate(geom = "text", x = 40, y = 0.95,
+           label = threshold_table$all_structure_labs[1], hjust = "left")+
+  
+  #1c 35 km shelter arrow
+  annotate(
+    geom = "curve", x = 30, y = 0.64 ,
+    xend = threshold_table$wind_speeds[1], yend = threshold_table$shelters[1],
+    curvature = -0.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  #1d 35 km shelter text
+  annotate(geom = "text", x = 27, y = 0.64,
+           label = threshold_table$shelter_labs[1], hjust = "center")+
+  
+  # 2a arrow to 1 m depth
+  annotate(
+    geom = "curve", x = 50, y = 0.85 ,
+    xend = threshold_table$wind_speeds[2], yend = threshold_table$all_structures[2],
+    curvature = .3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 2b structures text 4
+  annotate(geom = "text", x = 50, y = 0.88,
+           label = threshold_table$all_structure_labs[2], hjust = "center")+
+  # 2c arrow to 1 m depth
+  annotate(
+    geom = "curve", x = 40, y = 0.61 ,
+    xend = threshold_table$wind_speeds[2], yend = threshold_table$shelters[2],
+    curvature = -.3, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 2d structures text 4
+  annotate(geom = "text", x = 40, y = 0.6,
+           label = threshold_table$shelter_labs[2], hjust = "center")+
+  
+  # 3a structures 50 km
+  annotate(
+    geom = "curve", x = 55, y = 0.75 ,
+    xend =  threshold_table$wind_speeds[3], yend =  threshold_table$all_structures[3],
+    curvature = .2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 3b structures 50 km text
+  annotate(geom = "text", x = 55, y = 0.80,
+           label = threshold_table$all_structure_labs[3], hjust = "center")+
+  # 3c shelters 50 km
+  annotate(
+    geom = "curve", x = 50, y = 0.50 ,
+    xend =  threshold_table$wind_speeds[3], yend =  threshold_table$shelters[3],
+    curvature = -.2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 3d sheters 50 km text
+  annotate(geom = "text", x = 50, y = 0.50,
+           label = threshold_table$shelter_labs[3], hjust = "center")+
+  
+  # 4a structures 80 km arrow
+  annotate(
+    geom = "curve", x = 80, y = 0.4 ,
+    xend = threshold_table$wind_speeds[4], yend =  threshold_table$all_structures[4],
+    curvature = 0.2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 4 b structures 80 km text
+  annotate(geom = "text", x = 80, y = 0.42,
+           label = threshold_table$all_structure_labs[4], hjust = "center")+
+  # 4c structures 80 km arrow
+  annotate(
+    geom = "curve", x = 75, y = 0.16 ,
+    xend = threshold_table$wind_speeds[4], yend =  threshold_table$shelters[4],
+    curvature = -0.2, arrow = arrow(length = unit(2, "mm")), color = "black", size=1) +
+  # 4 d structures 80 km text
+  annotate(geom = "text", x = 75, y = 0.15,
+           label = threshold_table$shelter_labs[4], hjust = "center")+
+
+  annotate(geom="text", x= 35, y=0.04,label="USK",angle=90,hjust="left")+
+  annotate(geom="text", x= 40, y=0.04,label="USK + TDK",angle=90,hjust="left")+
+  annotate(geom="text", x= 50, y=0.04,label="TS",angle=90,hjust="left")+
+  annotate(geom="text", x= 80, y=0.04,label="MTS",angle=90,hjust="left")+
+
+  ggtitle("% Structures Exposed to Wind Speeds Simulated from 1995 Cat 1 Cyclone",
+          subtitle = "Only KTPBE Analyzed")+
+  labs(x="wind speeds (km/hr",y="# Structured Exposed")+
+  theme_bw()+
+  theme(axis.text.y = element_text(angle = 90),
+        legend.position = "none"
+        )
+
+```
+
+```{r, windperc-plot, out.width='100%' , fig.align='left',fig.cap="Percentage of strutures & shelters exposed to each wind speed interval from the modelled November 1995 category-1 cyclone. The numbers written at each wind speed threshold indicate the number of structures/shelters that will be exposed to that speed or greater. Only structures in KTPBE were considered.", echo =F}
+cyclone_wind_percent_plot
+```
+<br><br>
+
+```{r, cyclonebar-plot,fig.align='left', fig.cap="# of structures exposed to each wind speed interval from UNDP wind assessment of November 1995 category-1 cyclone",echo=F}
+cyclone_damage_barplot
+```
+
+```{r, out.width='50%', echo =F}
+cyclone_damage_table %>% 
+  tab_options(table.font.size=px(12))
+```
+
+
+
+
+
+
+Landslide Hazard
+=====================================================
+need to decide how we want this included
+
+
+Next Steps
+=====================================================
+
+Projecting numbers from structures/shelter to population
+----------------------------------------------------
+can we get % numbers of shelter types?
+
+Incorporating facility data 
+----------------------------------------------------
+
+Defining vulnerability groups
+----------------------------------------------------
+
+
+Linking ARI type events to cyclone categories
+----------------------------------------------------
+
+Risk weighting
+----------------------------------------------------
+
+
+```{r,  results='asis', echo = FALSE, warning = FALSE, include= FALSE}
+library(tidyquant)
+
+chirps_merged<-map_dfr(list.files("inputs/precip_data/historical/",full.names = T), read_csv)
+
+chirps1<-chirps_merged %>%
+  mutate(date=mdy(`system:time_start`),
+         year= year(date))
+
+
+maximum_single_day_precip<- chirps1 %>%
+  group_by(year) %>%
+  filter(precipitation==max(precipitation))
+
+
+roll_sum_to_max<- function(df, grouper, time_interval){
+  tq_col<-paste0("sum_", time_interval)
+  df %>%
+    group_by(!!sym(grouper)) %>%
+    filter(!!sym(tq_col)==max(!!sym(tq_col),na.rm = T)) %>%
+    mutate(start_date=date-(parse_number(time_interval)-1),
+           start_month=month(start_date,abbr=T, label=T),
+           start_day=day(start_date),
+           end_day= day(date),
+           interval= time_interval,
+           label=paste0(start_month," ", start_day,"-",end_day)
+    ) %>%
+    rename(sum_val=tq_col)
+
+}
+
+
+precip_1_day_max<- chirps1 %>%
+  # group_by(year) %>%
+  tq_mutate(
+    # tq_mutate args
+    select     = precipitation,
+    mutate_fun = rollapply,
+    # rollapply args
+    width      = 1,
+    align      = "right",
+    FUN        = sum,
+    # mean args
+    na.rm      = TRUE,
+    # tq_mutate args
+    col_rename = "sum_1_day"
+  )
+precip_2_day_max<- chirps1 %>%
+  # group_by(year) %>%
+  tq_mutate(
+    # tq_mutate args
+    select     = precipitation,
+    mutate_fun = rollapply,
+    # rollapply args
+    width      = 2,
+    align      = "right",
+    FUN        = sum,
+    # mean args
+    na.rm      = TRUE,
+    # tq_mutate args
+    col_rename = "sum_2_day"
+  )
+
+precip_3_day_max<- chirps1 %>%
+  # group_by(Device.name) %>%
+  tq_mutate(
+    # tq_mutate args
+    select     = precipitation,
+    mutate_fun = rollapply,
+    # rollapply args
+    width      = 3,
+    align      = "right",
+    FUN        = sum,
+    # mean args
+    na.rm      = TRUE,
+    # tq_mutate args
+    col_rename = "sum_3_day"
+  )
+
+
+precip_5_day_max<- chirps1 %>%
+  # group_by(Device.name) %>%
+  tq_mutate(
+    # tq_mutate args
+    select     = precipitation,
+    mutate_fun = rollapply,
+    # rollapply args
+    width      = 5,
+    align      = "right",
+    FUN        = sum,
+    # mean args
+    na.rm      = TRUE,
+    # tq_mutate args
+    col_rename = "sum_5_day"
+  )
+
+
+
+all_roll_max<-bind_rows(
+  roll_sum_to_max(df = precip_1_day_max,grouper = "year",time_interval = "1_day"),
+roll_sum_to_max(df = precip_2_day_max,grouper = "year",time_interval = "2_day"),
+roll_sum_to_max(df = precip_3_day_max,grouper = "year",time_interval = "3_day"),
+roll_sum_to_max(df = precip_5_day_max,grouper = "year",time_interval = "5_day")
+)
+
+all_roll_max<- all_roll_max %>% mutate(label=ifelse(interval=="1_day",paste0(start_month, " ", start_day), label))
+
+  # #filter duplicates
+  # all_roll_max<- all_roll_max %>%
+  #   group_by(year, interval) %>%
+  #   slice(1)
+  #filter duplicates
+all_roll_max<- all_roll_max %>%
+    group_by(year, interval) %>%
+    slice(1)
+
+# all_roll_max %>% filter(year==1982) %>% print(n=nrow(.))
+time_period_labs <- data.frame(
+  xstart = c(1981,2017),
+  xend =c(2017,2020),
+  col= forcats::as_factor( c("Pre-Influx","Post-Influx"))
+)
+
+interval_options<-all_roll_max$interval %>% unique()
+chart_labels<- c("Annual Maximum 1 Day Rainfall Accumulation",
+                 "Annual Maximum 2 Day Rainfall Accumulation",
+                 "Annual Maximum 3 Day Rainfall Accumulation",
+                 "Annual Maximum 5 Day Rainfall Accumulation")
+
+
+chirps_annual_historical_plots<-list()
+for(i in 1: length(interval_options)){
+interval_temp<- interval_options[i]
+chart_label_temp<- chart_labels[i]
+df_temp<-all_roll_max %>%
+  filter(interval==interval_temp)
+chirps_annual_historical_plots[[i]]<- df_temp %>%
+  ggplot(aes(x=year,y=sum_val,fill=log10(sum_val)))+#fill=as.character(year)))+
+  geom_bar(stat = "identity")+
+  # geom_rect(data=time_period_labs,
+  #           mapping=aes(ymin=0,
+  #                       ymax=950,
+  #                       xmin=xstart,
+  #                       xmax=xend, fill=col), alpha =0.5)+
+  scale_fill_gradient2(low="white",high="lightblue", space="blue")+
+
+  scale_x_continuous(breaks=seq(1981,2020,1))+
+  scale_y_continuous(limits = c(0,max(df_temp$sum_val+100)))+
+  geom_text(aes(x=year, y=0, label=label, angle=90, hjust="left"), size=3)+
+  geom_text(aes(x=year,
+                y=sum_val+10,
+                label=paste0(round(sum_val,0)," mm"),
+                angle=90, hjust="left"), size=3)+
+  
+  labs(y= "precip (mm)")+
+  ggtitle(chart_label_temp)+
+  # facet_wrap(~interval, ncol=1)+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle=90),
+    legend.position= "none"
+  )
+}
+```
+
+
+
+
+
+Annex 
+=====================================================
+
+
+  
+  
+```{r, chirpsfacet-plot,out.height="100%", fig.align='center',warning=F, echo =F}
+# <link href="landscape.css" rel="stylesheet" type="text/css">
+# chirps_annual_historical_plot
+ # out.width= 8,out.height="100%",out.extra='angle=90'
+walk(chirps_annual_historical_plots, ~ print(.x))
+
+```
+
+
+```{r}
+```

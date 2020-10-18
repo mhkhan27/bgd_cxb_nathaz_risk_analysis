@@ -1,0 +1,126 @@
+@import url("https://fonts.googleapis.com/css?family=Montserrat|Playfair+Display&display=swap");
+
+/* Main text is monserrat*/
+  body {
+    font-family: "Montserrat", sans-serif;
+    font-size: 11pt;
+    line-height: 1.15;
+    color: #444;
+    padding-top: 60px;
+    padding-bottom: 40px;
+  }
+  h1 {
+    font-family: "Montserrat", sans-serif;
+    font-size: 16pt;
+    color: #444;
+  }
+  h2 {
+    font-family: "Montserrat", sans-serif;
+    font-size: 14pt;
+    color: #444;
+  }
+/* page size */
+@page {
+  size: 6in 9in;
+}
+
+/* store some string variables */
+.shorttitle1 {
+  string-set: h1-text content(text);
+}
+
+.shorttitle2 {
+  string-set: h2-text content(text);
+}
+
+/* left page */
+.running-h1-title {
+  position: running(runningH1Title);
+  width: var(--running-title-width);
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.running-h1-title:before {
+  content: string(h1-text);
+}
+
+@page :first {
+  @top-left {
+    content: none;
+  }
+  @top-right {
+    content: none;
+  }
+  @bottom-right {
+    content: none !important;
+    content: counter(page);
+  }
+  background-image: var(--front-cover);
+  background-position: center;
+  background-size: contain;
+  background-repeat: no-repeat;
+}
+
+@page :left {
+  @bottom-right {
+    content: counter(page);
+  }
+}
+
+@page :right {
+  @bottom-right {
+    content: counter(page);
+  }
+}
+
+/* Front cover */
+.front-cover {
+  break-after: page;
+}
+
+/* page breaks; aka CSS fragmentation */
+.level1 {
+  break-before: page;
+}
+.section > h1, .section > h2, .section > h3, .section > h4, .section > h5, .section > h6 {
+  break-after: avoid;
+}
+.footnotes {
+  break-before: always;
+  break-after: always;
+}
+.figure {
+  break-inside: avoid;
+}
+
+/* do not break captions */
+caption {
+  break-inside: avoid;
+  break-after: avoid;
+}
+:root {
+--pagedjs-margin-right: 0.5in !important;
+--pagedjs-margin-left: 0.5in !important;
+--pagedjs-margin-bottom: 0.5in !important;
+--pagedjs-margin-top: 0.5in !important;
+
+}
+
+.footnote {font-size: 3px}
+/*.watermark {
+  opacity: 0.2;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  font-size: 800%;
+  color: #00407d;
+}*/
+@media print {
+  #my-id {
+    -webkit-transform: rotate(90deg);
+    -moz-transform: rotate(90deg);
+    -o-transform: rotate(90deg);
+    -ms-transform: rotate(90deg);
+    transform: rotate(90deg);
+  }
+}
